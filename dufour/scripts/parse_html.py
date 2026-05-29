@@ -1,6 +1,8 @@
 import json
 import os
 from bs4 import BeautifulSoup
+from backend.database import get_session, create_all
+from backend.models import Topic, BibleReference
 
 
 def parse_html(html_content: str) -> list[dict]:
@@ -14,7 +16,6 @@ def parse_html(html_content: str) -> list[dict]:
             reference = a.get_text(strip=True)
             if not reference:
                 continue
-            # Determine category based on surrounding context
             category = _determine_category(p, reference)
             results.append({
                 "topic": topic,
@@ -39,8 +40,34 @@ def _determine_category(paragraph, reference: str) -> str:
     if any(term in text for term in ["Jes ", "Jer ", "Ez ", "Dan ", "Hos ", "Joel ", "Am ", "Obd ",
                                        "Jon ", "Mi ", "Nah ", "Hab ", "Zef ", "Hag ", "Sach ", "Mal "]):
         return "Propheten"
-    # Default: Altes Testament (Pentateuch, Geschichtsbücher, Weisheitsliteratur)
     return "Altes Testament"
+
+
+def save_to_db(data: list[dict]) -> None:
+    """Save parsed data to SQLite database."""
+    create_all()
+    session = next(get_session())
+    try:
+        for entry in data:
+            # Check if topic already exists
+            topic = session.query(Topic).filter_by(name=entry["topic"]).first()
+            if not topic:
+                topic = Topic(name=entry["topic"])
+                session.add(topic)
+                session.flush()
+
+            ref = BibleReference(
+                reference=entry["reference"],
+                category=entry["category"],
+                topic_id=topic.id
+            )
+            session.add(ref)
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise
+    finally:
+        session.close()
 
 
 if __name__ == "__main__":
@@ -49,7 +76,6 @@ if __name__ == "__main__":
     for filename in os.listdir(data_dir):
         if filename.endswith(".html"):
             filepath = os.path.join(data_dir, filename)
-            # Try UTF-8 first, fallback to Latin-1
             try:
                 with open(filepath, "r", encoding="utf-8") as f:
                     html = f.read()
@@ -57,4 +83,9 @@ if __name__ == "__main__":
                 with open(filepath, "r", encoding="latin-1") as f:
                     html = f.read()
             all_results.extend(parse_html(html))
-    print(json.dumps(all_results, ensure_ascii=False, indent=2))
+    
+    if all_results:
+        save_to_db(all_results)
+        print(f"Saved {len(all_results)} references to database.")
+    else:
+        print("No data to save.")
