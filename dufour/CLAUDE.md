@@ -249,7 +249,7 @@ isort
 ```bash
 # 1. Virtual Environment
 python -m venv .venv
-source .venv/bin/activate        # Linux/macOS
+source .venv/bin/activate.fish        # Linux/macOS
 .venv\Scripts\activate           # Windows
 
 # 2. Dependencies
