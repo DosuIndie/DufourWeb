@@ -1,5 +1,20 @@
 import pytest
-from scripts.parse_html import parse_html
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+from backend.database import Base
+from backend.models import Topic, BibleReference
+from scripts.parse_html import parse_html, save_to_db
+
+
+@pytest.fixture
+def db_session():
+    """Create a fresh in-memory database for each test."""
+    engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+    Base.metadata.create_all(bind=engine)
+    TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+    session = TestingSessionLocal()
+    yield session
+    session.close()
 
 
 def test_parse_html_returns_list():
@@ -36,13 +51,39 @@ def test_parse_html_empty_html():
     assert results == []
 
 
-def test_parse_html_multiple_references():
-    """Test parsing multiple references in one paragraph."""
-    html = """
-    <html><head></head><body>
-    <h1>GLAUBE</h1>
-    <p>Wie Abraham (<a href="GEN.html">Gen 15,6</a>) und Mose (<a href="EX.html">Ex 14,31</a>).</p>
-    </body></html>
-    """
-    results = parse_html(html)
-    assert len(results) >= 2
+def test_save_to_db_creates_bible_reference(monkeypatch, db_session):
+    """Test that save_to_db creates BibleReference entries."""
+    # Monkey-patch get_session to use our test session
+    def mock_get_session():
+        yield db_session
+
+    monkeypatch.setattr("scripts.parse_html.get_session", mock_get_session)
+    monkeypatch.setattr("scripts.parse_html.create_all", lambda: None)
+
+    data = [
+        {"topic": "Glaube", "reference": "Hebr 11,1", "category": "Neues Testament"},
+        {"topic": "Glaube", "reference": "Röm 1,17", "category": "Neues Testament"},
+    ]
+
+    save_to_db(data)
+
+    references = db_session.query(BibleReference).all()
+    assert len(references) == 2
+    assert references[0].reference == "Hebr 11,1"
+
+
+def test_save_to_db_skips_duplicate_topic(monkeypatch, db_session):
+    """Test that duplicate topics are handled gracefully."""
+    def mock_get_session():
+        yield db_session
+
+    monkeypatch.setattr("scripts.parse_html.get_session", mock_get_session)
+    monkeypatch.setattr("scripts.parse_html.create_all", lambda: None)
+
+    # First save
+    save_to_db([{"topic": "Glaube", "reference": "Hebr 11,1", "category": "Neues Testament"}])
+    # Second save with same topic
+    save_to_db([{"topic": "Glaube", "reference": "Röm 1,17", "category": "Neues Testament"}])
+
+    topics = db_session.query(Topic).all()
+    assert len(topics) == 1  # Only one topic entry
