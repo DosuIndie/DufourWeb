@@ -1,58 +1,105 @@
 import json
 import os
+import re
 from bs4 import BeautifulSoup
 from backend.database import get_session, create_all
 from backend.models import Topic, BibleReference
 
 
-def parse_html(html_content: str) -> list[dict]:
-    """Parst HTML-Inhalt und extrahiert Thema, Bibelstellen und Kategorien."""
-    soup = BeautifulSoup(html_content, "html.parser")
-    
-    # Thema aus der <h1> Überschrift extrahieren
-    topic = soup.h1.get_text(strip=True) if soup.h1 else ""
-    results = []
+# Katalog anerkannter deutscher Bibelstellen-Abkürzungen.
+# Mehrwortige (z.B. "1 Petr") werden zuerst gematcht.
+BIBLE_BOOKS = [
+    # Mehrwortige Abkürzungen (längste zuerst)
+    "1 Sam", "2 Sam", "1 Kön", "2 Kön", "1 Chr", "2 Chr", "1 Makk", "2 Makk",
+    "1 Kor", "2 Kor", "1 Thess", "2 Thess", "1 Tim", "2 Tim",
+    "1 Petr", "2 Petr", "1 Joh", "2 Joh", "3 Joh",
+    "1 Pt", "2 Pt",
+    # Einwortige Abkürzungen
+    "Gen", "Gn", "Ex", "Lev", "Num", "Dtn", "Dt", "Jos", "Ri", "Idc",
+    "Rut", "Rt", "Esr", "Neh", "Tob", "Jdt", "Est",
+    "Ijob", "Jb", "Hi", "Ps", "Pss", "Spr", "Koh", "Eccl", "Hld",
+    "Weish", "Wis", "Sir",
+    "Jes", "Is", "Jer", "Jr", "Klgl", "Lam", "Bar", "Ez", "Ezech",
+    "Dan", "Dn", "Hos", "Os", "Joel", "Am", "Obd", "Ob", "Jon",
+    "Mi", "Nah", "Hab", "Zef", "Hag", "Sach", "Mal",
+    "Mt", "Mat", "Mk", "Mc", "Lk", "Joh", "Apg", "Röm",
+    "Gal", "Eph", "Phil", "Phl", "Kol", "Tit", "Phlm", "Phm",
+    "Hebr", "Jak", "Jac", "Jud", "Offb", "Apk", "Off",
+]
+BIBLE_BOOKS = sorted(set(BIBLE_BOOKS), key=len, reverse=True)
+BOOK_PATTERN = "|".join(re.escape(b) for b in BIBLE_BOOKS)
 
-    # Alle <p> Absätze durchgehen
+# Vollständige Referenz: <Buch> <Kapitel>,<Vers> [f|ff] [-<Vers>] [. <Vers>]* [par.]?
+# Gruppe 1: Buch, Gruppe 2: Kapitel, Gruppe 3: Vers
+BIBLE_REF_RE = re.compile(
+    r"\b(" + BOOK_PATTERN + r")"
+    r"\s+\d+"
+    r"\s*[,\.]\s*\d+"
+    r"(?:\s*[a-zäöüß]{1,2})?"
+    r"(?:\s*-\s*\d+(?:\s*[a-zäöüß]{1,2})?)?"
+    r"(?:\s*\.\s*\d+(?:\s*[a-zäöüß]{1,2})?)*"
+    r"(?:\s+par\.)?",
+    re.UNICODE,
+)
+
+# Kategorisierung der Bücher
+EVANGELIEN = {"Mt", "Mat", "Mk", "Mc", "Lk", "Joh"}
+NT = EVANGELIEN | {
+    "Apg", "Röm", "1 Kor", "2 Kor", "Gal", "Eph", "Phil", "Phl", "Kol",
+    "1 Thess", "2 Thess", "1 Tim", "2 Tim", "Tit", "Phlm", "Phm",
+    "Hebr", "Jak", "Jac", "1 Petr", "2 Petr", "1 Pt", "2 Pt",
+    "1 Joh", "2 Joh", "3 Joh", "Jud", "Offb", "Apk", "Off",
+}
+PROPHETEN = {
+    "Jes", "Is", "Jer", "Jr", "Klgl", "Lam", "Bar", "Ez", "Ezech",
+    "Dan", "Dn", "Hos", "Os", "Joel", "Am", "Obd", "Ob", "Jon",
+    "Mi", "Nah", "Hab", "Zef", "Hag", "Sach", "Mal",
+}
+
+
+def _classify(book: str) -> str:
+    """Ordnet eine Buch-Abkürzung einer der vier Kategorien zu."""
+    if book in EVANGELIEN:
+        return "Evangelien"
+    if book in NT:
+        return "Neues Testament"
+    if book in PROPHETEN:
+        return "Propheten"
+    return "Altes Testament"
+
+
+def _normalize_reference(text: str) -> str:
+    """Bereinigt eine extrahierte Referenz (überflüssige Leerzeichen, Trailing 'par.')."""
+    text = re.sub(r"\s+par\.\s*$", "", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
+
+
+def parse_html(html_content: str) -> list[dict]:
+    """Parst HTML-Inhalt und extrahiert Thema + Bibelstellen mit Kategorie."""
+    soup = BeautifulSoup(html_content, "html.parser")
+    topic = soup.h1.get_text(strip=True) if soup.h1 else ""
+    if not topic:
+        return []
+
+    results: list[dict] = []
+    seen: set[tuple[str, str]] = set()
+
     for p in soup.find_all("p"):
-        # Alle Links (<a href="...">) in diesem Absatz finden
-        for a in p.find_all("a", href=True):
-            reference = a.get_text(strip=True)  # Link-Text als Referenz (z.B. "Wasser")
-            if not reference:
+        text = p.get_text(" ", strip=True)
+        for match in BIBLE_REF_RE.finditer(text):
+            book = match.group(1)
+            ref = _normalize_reference(match.group(0))
+            if not ref:
                 continue
-            # Kategorie anhand des Absatz-Textes bestimmen
-            category = _determine_category(p, reference)
-            results.append({
-                "topic": topic,
-                "reference": reference,
-                "category": category,
-            })
+            category = _classify(book)
+            key = (ref, category)
+            if key in seen:
+                continue
+            seen.add(key)
+            results.append({"topic": topic, "reference": ref, "category": category})
 
     return results
-
-
-def _determine_category(paragraph, reference: str) -> str:
-    """Bestimmt die Kategorie einer Bibelstelle anhand der enthaltenen Buch-Abkürzungen."""
-    text = paragraph.get_text()
-    
-    # Prüfen auf Evangelien (Matthäus, Markus, Lukas, Johannes)
-    if any(term in text for term in ["Mt ", "Mk ", "Lk ", "Joh "]):
-        return "Evangelien"
-    
-    # Prüfen auf restliches Neues Testament (Briefe, Offenbarung)
-    if any(term in text for term in ["Röm ", "1 Kor ", "2 Kor ", "Gal ", "Eph ", "Phil ", "Kol ",
-                                       "1 Thess ", "2 Thess ", "1 Tim ", "2 Tim ", "Tit ", "Phlm ",
-                                       "Hebr ", "Jak ", "1 Petr ", "2 Petr ", "1 Joh ", "2 Joh ",
-                                       "3 Joh ", "Jud ", "Offb "]):
-        return "Neues Testament"
-    
-    # Prüfen auf Propheten (Jesaja, Jeremia, Ezechiel, Daniel, kleine Propheten)
-    if any(term in text for term in ["Jes ", "Jer ", "Ez ", "Dan ", "Hos ", "Joel ", "Am ", "Obd ",
-                                       "Jon ", "Mi ", "Nah ", "Hab ", "Zef ", "Hag ", "Sach ", "Mal "]):
-        return "Propheten"
-    
-    # Alles andere fällt unter Altes Testament (Genesis, Exodus, Psalmen, Sprüche, etc.)
-    return "Altes Testament"
 
 
 def save_to_db(data: list[dict]) -> None:
