@@ -26,16 +26,18 @@ def _insert_test_data():
 
 @pytest.fixture
 def client():
-    """Create a test client with clean database."""
+    """Create a test client with clean database, pre-authenticated via session cookie."""
     # Tabellen erstellen (erst dann existieren sie)
     create_all()
-    
+
     # Testdaten einfügen
     _insert_test_data()
-    
+
     with TestClient(app) as c:
+        # /search ist durch Session-Cookie geschützt → vorab einloggen
+        c.post("/login", json={"password": "secret"})
         yield c
-    
+
     # Datenbank aufräumen nach dem Test
     session = SessionLocal()
     session.query(BibleReference).delete()
