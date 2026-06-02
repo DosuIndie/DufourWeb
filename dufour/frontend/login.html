@@ -1,1 +1,46 @@
-<!-- Login page -->
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<title>Dufour – Login</title>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 360px; margin: 80px auto; padding: 0 16px; }
+  h1 { font-size: 1.4rem; }
+  form { display: flex; flex-direction: column; gap: 12px; }
+  input, button { padding: 8px 10px; font-size: 1rem; }
+  button { cursor: pointer; }
+  #error { color: #b00020; min-height: 1.2em; }
+</style>
+</head>
+<body>
+<h1>Dufour Bibel-Suche</h1>
+<form id="login-form">
+  <label for="password">Passwort</label>
+  <input type="password" id="password" name="password" autocomplete="current-password" required>
+  <button type="submit">Anmelden</button>
+  <div id="error" role="alert"></div>
+</form>
+<script>
+  const form = document.getElementById("login-form");
+  const pw = document.getElementById("password");
+  const err = document.getElementById("error");
+  form.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    err.textContent = "";
+    const res = await fetch("/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "same-origin",
+      body: JSON.stringify({ password: pw.value }),
+    });
+    if (res.status === 200) {
+      window.location.href = "search.html";
+    } else {
+      err.textContent = "Falsches Passwort";
+      pw.value = "";
+      pw.focus();
+    }
+  });
+</script>
+</body>
+</html>

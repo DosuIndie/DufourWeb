@@ -1,1 +1,90 @@
-<!-- Search page -->
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<title>Dufour – Suche</title>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 720px; margin: 40px auto; padding: 0 16px; }
+  h1 { font-size: 1.4rem; }
+  form { display: flex; gap: 8px; margin-bottom: 24px; }
+  input[type="search"] { flex: 1; padding: 8px 10px; font-size: 1rem; }
+  button { padding: 8px 14px; font-size: 1rem; cursor: pointer; }
+  section { margin-top: 16px; }
+  h2 { font-size: 1.05rem; margin-bottom: 4px; color: #444; }
+  ul { margin: 4px 0 0 20px; padding: 0; }
+  li.empty { color: #888; list-style: none; margin-left: -20px; }
+  #status { min-height: 1.2em; color: #b00020; }
+</style>
+</head>
+<body>
+<h1>Dufour Bibel-Suche</h1>
+<form id="search-form">
+  <input type="search" id="q" name="q" placeholder="Thema eingeben…" required>
+  <button type="submit">Suchen</button>
+</form>
+<div id="status" role="alert"></div>
+<div id="results"></div>
+<script>
+  const form = document.getElementById("search-form");
+  const input = document.getElementById("q");
+  const statusEl = document.getElementById("status");
+  const resultsEl = document.getElementById("results");
+
+  function goLogin() { window.location.href = "login.html"; }
+
+  async function checkAuth() {
+    const res = await fetch("/search?q=a", { credentials: "same-origin" });
+    if (res.status === 401) { goLogin(); return false; }
+    return true;
+  }
+
+  function renderResults(data) {
+    resultsEl.innerHTML = "";
+    const heading = document.createElement("h2");
+    heading.textContent = "Thema: " + (data.topic || "–");
+    resultsEl.appendChild(heading);
+
+    const orderedKeys = ["Altes Testament", "Propheten", "Neues Testament", "Evangelien"];
+    const keys = orderedKeys.filter(k => k in data.results).concat(
+      Object.keys(data.results).filter(k => !orderedKeys.includes(k))
+    );
+
+    for (const cat of keys) {
+      const refs = data.results[cat] || [];
+      const sec = document.createElement("section");
+      const h = document.createElement("h2");
+      h.textContent = cat;
+      sec.appendChild(h);
+      const ul = document.createElement("ul");
+      if (refs.length === 0) {
+        const li = document.createElement("li");
+        li.className = "empty";
+        li.textContent = "Keine Treffer";
+        ul.appendChild(li);
+      } else {
+        for (const r of refs) {
+          const li = document.createElement("li");
+          li.textContent = r;
+          ul.appendChild(li);
+        }
+      }
+      sec.appendChild(ul);
+      resultsEl.appendChild(sec);
+    }
+  }
+
+  form.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    statusEl.textContent = "";
+    const q = input.value.trim();
+    if (!q) { statusEl.textContent = "Bitte ein Thema eingeben."; return; }
+    const res = await fetch("/search?q=" + encodeURIComponent(q), { credentials: "same-origin" });
+    if (res.status === 401) { goLogin(); return; }
+    if (!res.ok) { statusEl.textContent = "Fehler bei der Suche."; return; }
+    renderResults(await res.json());
+  });
+
+  checkAuth();
+</script>
+</body>
+</html>

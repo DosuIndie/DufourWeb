@@ -1,16 +1,150 @@
 import pytest
-from scripts.parse_html import parse_html
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+from backend.database import Base
+from backend.models import Topic, BibleReference
+from scripts.parse_html import parse_html, save_to_db
 
 
-def test_parse_html():
+@pytest.fixture
+def db_session():
+    """Erstellt eine frische In-Memory-Datenbank für jeden Test."""
+    engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+    Base.metadata.create_all(bind=engine)
+    TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+    session = TestingSessionLocal()
+    yield session
+    session.close()
+
+
+def test_parse_html_returns_list():
+    """Test: parse_html() gibt eine Liste zurück (nicht leer bei Inhalt)."""
     html = """
-    <html>
-        <h1>Genesis</h1>
-        <div class="reference">Gen 1,1</div>
-        <div class="category">Altes Testament</div>
-    </html>
+    <html><head></head><body>
+    <h1>Glaube</h1>
+    <p>Der Glaube ist ein Fundament (vgl. <a href="HEBR.html">Hebr 11,1</a>).</p>
+    </body></html>
     """
-    result = parse_html(html)
-    assert result["topic"] == "Genesis"
-    assert result["reference"] == "Gen 1,1"
-    assert result["category"] == "Altes Testament"
+    results = parse_html(html)
+    assert isinstance(results, list)
+    assert len(results) > 0  # Mindestens ein Eintrag
+
+
+def test_parse_html_fields_not_empty():
+    """Test: Jeder Eintrag hat topic, reference und category (nicht leer)."""
+    html = """
+    <html><head></head><body>
+    <h1>BAUM</h1>
+    <p>Der Gerechte ist wie ein Baum (Ps 1,3).</p>
+    <p>Jesus sagte: Ich bin der Weinstock (<a href="JOH.html">Joh 15,1</a>).</p>
+    </body></html>
+    """
+    results = parse_html(html)
+    for entry in results:
+        assert entry["topic"] == "BAUM"
+        assert entry["reference"] != ""  # Referenz darf nicht leer sein
+        assert entry["category"] != ""   # Kategorie darf nicht leer sein
+
+
+def test_parse_html_empty_html():
+    """Test: Leeres HTML gibt leere Liste zurück."""
+    html = "<html><head></head><body></body></html>"
+    results = parse_html(html)
+    assert results == []
+
+
+def test_save_to_db_creates_bible_reference(monkeypatch, db_session):
+    """Test: save_to_db() erzeugt BibleReference-Einträge in der DB."""
+    # Monkeypatch: Ersetzt get_session() durch unsere Test-DB-Sitzung
+    def mock_get_session():
+        yield db_session
+
+    monkeypatch.setattr("scripts.parse_html.get_session", mock_get_session)
+    monkeypatch.setattr("scripts.parse_html.create_all", lambda: None)  # create_all deaktivieren
+
+    data = [
+        {"topic": "Glaube", "reference": "Hebr 11,1", "category": "Neues Testament"},
+        {"topic": "Glaube", "reference": "Röm 1,17", "category": "Neues Testament"},
+    ]
+
+    save_to_db(data)
+
+    references = db_session.query(BibleReference).all()
+    assert len(references) == 2  # Zwei Referenzen wurden gespeichert
+    assert references[0].reference == "Hebr 11,1"
+
+
+def test_save_to_db_skips_duplicate_topic(monkeypatch, db_session):
+    """Test: Doppelte Topics werden nicht doppelt angelegt."""
+    def mock_get_session():
+        yield db_session
+
+    monkeypatch.setattr("scripts.parse_html.get_session", mock_get_session)
+    monkeypatch.setattr("scripts.parse_html.create_all", lambda: None)
+
+    # Erstes Speichern: Topic "Glaube" wird angelegt
+    save_to_db([{"topic": "Glaube", "reference": "Hebr 11,1", "category": "Neues Testament"}])
+    # Zweites Speichern: Topic "Glaube" existiert bereits → wird nicht dupliziert
+    save_to_db([{"topic": "Glaube", "reference": "Röm 1,17", "category": "Neues Testament"}])
+
+    topics = db_session.query(Topic).all()
+    assert len(topics) == 1  # Nur ein Topic, obwohl zweimal gespeichert
+
+
+def test_parse_html_extracts_bible_references():
+    """Test: parse_html() extrahiert Bibelstellen (keine Themen-Links) und kategorisiert sie."""
+    html = """
+    <html><head></head><body>
+    <h1>BAUM</h1>
+    <p>Der Gerechte ist wie ein Baum (Ps 1,3).
+       Siehe auch <a href="WASSER.html">Wasser</a> (Ex 15, 27; Is 41, 19).
+       Jesus sprach (Mt 7, 16 - 20 par.).</p>
+    </body></html>
+    """
+    results = parse_html(html)
+
+    # Topic ist gesetzt
+    assert all(r["topic"] == "BAUM" for r in results)
+
+    # Genau die Bibelstellen, NICHT die Topic-Links
+    refs = {r["reference"] for r in results}
+    assert "Ps 1,3" in refs
+    assert "Ex 15, 27" in refs
+    assert "Is 41, 19" in refs
+    # par.-Marker wurde abgeschnitten
+    assert any(r["reference"].startswith("Mt 7, 16 - 20") for r in results)
+    # KEINE Themen-Cross-References
+    assert "Wasser" not in refs
+
+    # Kategorisierung: Ps/Ex/Is → Altes Testament, Mt → Evangelien
+    by_ref = {r["reference"]: r["category"] for r in results}
+    assert by_ref["Ps 1,3"] == "Altes Testament"
+    assert by_ref["Ex 15, 27"] == "Altes Testament"
+    assert by_ref["Is 41, 19"] == "Propheten"
+    mt = next(r for r in results if r["reference"].startswith("Mt 7"))
+    assert mt["category"] == "Evangelien"
+
+
+def test_parse_html_dedupes_within_file():
+    """Test: Dieselbe Referenz wird nicht doppelt extrahiert."""
+    html = """
+    <html><head></head><body>
+    <h1>BAUM</h1>
+    <p>Erstens (Gn 1, 11f). Zweitens (Gn 1, 11f) nochmals.</p>
+    </body></html>
+    """
+    results = parse_html(html)
+    refs = [r["reference"] for r in results]
+    assert refs.count("Gn 1, 11f") == 1
+
+
+def test_parse_html_skips_topic_only_paragraphs():
+    """Test: Absätze ohne Bibelstellen (nur Topic-Links) liefern keinen Eintrag."""
+    html = """
+    <html><head></head><body>
+    <h1>WASSER</h1>
+    <p>Siehe <a href="BAUM.html">Baum</a> und <a href="QUELLE.html">Quelle</a>.</p>
+    </body></html>
+    """
+    results = parse_html(html)
+    assert results == []
