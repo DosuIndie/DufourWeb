@@ -89,3 +89,62 @@ def test_save_to_db_skips_duplicate_topic(monkeypatch, db_session):
 
     topics = db_session.query(Topic).all()
     assert len(topics) == 1  # Nur ein Topic, obwohl zweimal gespeichert
+
+
+def test_parse_html_extracts_bible_references():
+    """Test: parse_html() extrahiert Bibelstellen (keine Themen-Links) und kategorisiert sie."""
+    html = """
+    <html><head></head><body>
+    <h1>BAUM</h1>
+    <p>Der Gerechte ist wie ein Baum (Ps 1,3).
+       Siehe auch <a href="WASSER.html">Wasser</a> (Ex 15, 27; Is 41, 19).
+       Jesus sprach (Mt 7, 16 - 20 par.).</p>
+    </body></html>
+    """
+    results = parse_html(html)
+
+    # Topic ist gesetzt
+    assert all(r["topic"] == "BAUM" for r in results)
+
+    # Genau die Bibelstellen, NICHT die Topic-Links
+    refs = {r["reference"] for r in results}
+    assert "Ps 1,3" in refs
+    assert "Ex 15, 27" in refs
+    assert "Is 41, 19" in refs
+    # par.-Marker wurde abgeschnitten
+    assert any(r["reference"].startswith("Mt 7, 16 - 20") for r in results)
+    # KEINE Themen-Cross-References
+    assert "Wasser" not in refs
+
+    # Kategorisierung: Ps/Ex/Is → Altes Testament, Mt → Evangelien
+    by_ref = {r["reference"]: r["category"] for r in results}
+    assert by_ref["Ps 1,3"] == "Altes Testament"
+    assert by_ref["Ex 15, 27"] == "Altes Testament"
+    assert by_ref["Is 41, 19"] == "Propheten"
+    mt = next(r for r in results if r["reference"].startswith("Mt 7"))
+    assert mt["category"] == "Evangelien"
+
+
+def test_parse_html_dedupes_within_file():
+    """Test: Dieselbe Referenz wird nicht doppelt extrahiert."""
+    html = """
+    <html><head></head><body>
+    <h1>BAUM</h1>
+    <p>Erstens (Gn 1, 11f). Zweitens (Gn 1, 11f) nochmals.</p>
+    </body></html>
+    """
+    results = parse_html(html)
+    refs = [r["reference"] for r in results]
+    assert refs.count("Gn 1, 11f") == 1
+
+
+def test_parse_html_skips_topic_only_paragraphs():
+    """Test: Absätze ohne Bibelstellen (nur Topic-Links) liefern keinen Eintrag."""
+    html = """
+    <html><head></head><body>
+    <h1>WASSER</h1>
+    <p>Siehe <a href="BAUM.html">Baum</a> und <a href="QUELLE.html">Quelle</a>.</p>
+    </body></html>
+    """
+    results = parse_html(html)
+    assert results == []
