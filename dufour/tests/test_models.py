@@ -7,17 +7,18 @@ from backend.models import Topic, BibleReference
 
 @pytest.fixture
 def db_session():
-    """Create a fresh in-memory database for each test."""
+    """Erstellt eine frische In-Memory-Datenbank für jeden Test."""
+    # In-Memory SQLite (keine Datei, schneller und isoliert)
     engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
-    Base.metadata.create_all(bind=engine)
+    Base.metadata.create_all(bind=engine)  # Tabellen anlegen
     TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
     session = TestingSessionLocal()
-    yield session
-    session.close()
+    yield session  # Gibt Sitzung an den Test weiter
+    session.close()  # Sitzung nach Test schließen
 
 
 def test_create_topic(db_session):
-    """Test creating a Topic entry."""
+    """Test: Ein Topic kann angelegt und aus der DB gelesen werden."""
     topic = Topic(name="Glaube")
     db_session.add(topic)
     db_session.commit()
@@ -28,7 +29,7 @@ def test_create_topic(db_session):
 
 
 def test_create_bible_reference(db_session):
-    """Test creating a BibleReference with a Topic."""
+    """Test: Eine Bibelstelle kann mit einem Topic verknüpft angelegt werden."""
     topic = Topic(name="Glaube")
     db_session.add(topic)
     db_session.commit()
@@ -45,7 +46,7 @@ def test_create_bible_reference(db_session):
 
 
 def test_topic_references_relationship(db_session):
-    """Test the one-to-many relationship between Topic and BibleReference."""
+    """Test: Die 1-zu-n Beziehung zwischen Topic und BibleReference funktioniert."""
     topic = Topic(name="BAUM")
     db_session.add(topic)
     db_session.commit()
@@ -55,17 +56,17 @@ def test_topic_references_relationship(db_session):
     db_session.add_all([ref1, ref2])
     db_session.commit()
 
-    assert len(topic.references) == 2
+    assert len(topic.references) == 2  # Topic hat 2 Referenzen
     assert topic.references[0].reference in ["Ps 1,3", "Mt 7,17"]
 
 
 def test_topic_unique_constraint(db_session):
-    """Test that duplicate topic names are rejected."""
+    """Test: Doppelte Topic-Namen werden von der Datenbank abgelehnt."""
     topic1 = Topic(name="Glaube")
     db_session.add(topic1)
     db_session.commit()
 
     topic2 = Topic(name="Glaube")
     db_session.add(topic2)
-    with pytest.raises(Exception):  # IntegrityError expected
+    with pytest.raises(Exception):  # Erwartet: Datenbank-Fehler (IntegrityError)
         db_session.commit()
