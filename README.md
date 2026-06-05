@@ -43,58 +43,257 @@ requirements.txt
 ## UML
 
 ```mermaid
-graph TD
-    subgraph FRONTEND["Frontend (static HTML)"]
-        LOGIN["login.html Password form"]
-        SEARCH["search.html Topic search"]
-    end
+%%{init: {'theme': 'base', 'themeVariables': {'primaryColor': '#dcfce7', 'primaryBorderColor': '#16a34a', 'secondaryColor': '#dbeafe', 'tertiaryColor': '#fef9c3'}}}%%
+classDiagram
+direction TB
 
-    subgraph ENV[".env"]
-        ENVFILE["APP_PASSWORD=secret DATABASE_URL=postgresql://..."]
-    end
+%% ═══════════════════════════════════════════════════════════════
+%%  FRONTEND · HTML-Seiten
+%% ═══════════════════════════════════════════════════════════════
 
-    subgraph BACKEND["Backend (FastAPI)"]
-        MAIN["main.py FastAPI app + static mount"]
+namespace Frontend_HTML {
+    class index_html {
+        <<HTML-Seite>>
+        +meta http-equiv refresh sofort
+        +weiterleitenZuLogin() void
+    }
 
-        subgraph ROUTERS["Routers"]
-            AUTH["routers/auth.py POST /login"]
-            SRCH["routers/search.py GET /search"]
-        end
+    class login_html {
+        <<HTML-Seite>>
+        +Passwort-Formular
+        +onSubmit_POST_login() void
+        +zeigeFehlermeldung() void
+        +weiterleitenZuSearch() void
+    }
 
-        subgraph CORE["Core"]
-            DB["database.py SQLAlchemy engine + session"]
-            MDL["models.py Topic · BibleReference"]
-        end
-    end
+    class search_html {
+        <<HTML-Seite>>
+        +Sucheingabe-Formular
+        +checkAuth() Promise~bool~
+        +goLogin() void
+        +onSubmit_GET_search(q) void
+        +renderResults(data) void
+        +zeigeStatusFehler(msg) void
+    }
+}
 
-    subgraph TESTS["Tests (pytest + httpx)"]
-        TAUTH["test_auth.py"]
-        TSRCH["test_search.py"]
-    end
+%% ═══════════════════════════════════════════════════════════════
+%%  BACKEND · Einstiegspunkt & Kern
+%% ═══════════════════════════════════════════════════════════════
 
-    subgraph PERSISTENCE["Persistence"]
-        PG["PostgreSQL Render.com"]
-        SQLITE["SQLite fallback"]
-    end
+namespace Backend_Core {
+    class main_py {
+        <<FastAPI App>>
+        +app: FastAPI
+        +require_auth(request) void
+        -pruefSessionCookie(request) bool
+        -raise401_NichtAuthentifiziert() void
+        +registriereRouter_search() void
+        +registriereRouter_auth() void
+        +mountStaticFiles_frontend() void
+    }
 
-    LOGIN  -->|"POST /login"| AUTH
-    SEARCH -->|"GET /search"| SRCH
+    class database_py {
+        <<SQLAlchemy Engine>>
+        +DATABASE_URL: str
+        +engine: Engine
+        +SessionLocal: sessionmaker
+        +Base: DeclarativeBase
+        +get_session() Generator~Session~
+        -oeffneSession() Session
+        -schliessSessionNachRequest() void
+        +create_all() void
+    }
 
-    MAIN --> AUTH
-    MAIN --> SRCH
+    class models_py {
+        <<ORM Modelle>>
+        +Topic: id, name
+        +Topic.references: relationship
+        +BibleReference: id, reference, category, topic_id
+        +BibleReference.topic: relationship
+        +cascade_delete_orphan() void
+    }
+}
 
-    AUTH --> DB
-    SRCH --> MDL
-    MDL  --> DB
+%% ═══════════════════════════════════════════════════════════════
+%%  BACKEND · Router
+%% ═══════════════════════════════════════════════════════════════
 
-    DB -->|"DATABASE_URL"| PG
-    DB -->|"fallback if no env"| SQLITE
+namespace Backend_Router {
+    class router_auth_py {
+        <<Router /login>>
+        +LoginRequest: password str
+        +POST_login(request: LoginRequest) JSONResponse
+        -ladePasswortAusEnv() str
+        -vergleichePasswort(eingabe, env) bool
+        -raise401_FalschesPasswort() void
+        -setzeHttpOnlyCookie(session, authenticated) void
+    }
 
-    TAUTH --> AUTH
-    TSRCH --> SRCH
+    class router_search_py {
+        <<Router /search>>
+        +GET_search(q: str min_length=1) dict
+        -oeffneSession() Session
+        -sucheTopicILIKE(q) Topic
+        -ladeReferenzen(topic_id) List~BibleReference~
+        -gruppiereNachKategorie(refs) dict
+        -returnEmptyResultWennKeinTopic() dict
+        -schliessSession() void
+    }
+}
 
-    ENVFILE -->|"loaded via python-dotenv"| DB
-    ENVFILE -->|"loaded via python-dotenv"| AUTH
+%% ═══════════════════════════════════════════════════════════════
+%%  DATEN-PIPELINE · Parser-Skript
+%% ═══════════════════════════════════════════════════════════════
+
+namespace Datenpipeline {
+    class parse_html_py {
+        <<Skript scripts/>>
+        +BIBLE_BOOKS: List~str~
+        +BIBLE_REF_RE: Pattern
+        +EVANGELIEN: Set~str~
+        +NT: Set~str~
+        +PROPHETEN: Set~str~
+        +_classify(book) str
+        +_normalize_reference(text) str
+        +parse_html(html_content) List~dict~
+        -extrahiereH1AlsTopic() str
+        -iteriereParagraphen() void
+        -matcheRegex_BIBLE_REF_RE() Match
+        -dedupeInnerhalb_seen_set() void
+        +save_to_db(data) void
+        -create_all_Tabellen() void
+        -pruefeTopicDuplikat() Topic
+        -session_flush_fuer_ID() void
+        -session_commit_rollback() void
+        +ladeHTMLDateien_main() void
+        -versuche_UTF8_danach_Latin1() str
+    }
+}
+
+%% ═══════════════════════════════════════════════════════════════
+%%  DATENBANK · Tabellen
+%% ═══════════════════════════════════════════════════════════════
+
+namespace Datenbank_Tabellen {
+    class topics {
+        <<Tabelle>>
+        +id: INT PK AUTO_INCREMENT
+        +name: TEXT UNIQUE NOT NULL
+    }
+
+    class bible_references {
+        <<Tabelle>>
+        +id: INT PK AUTO_INCREMENT
+        +reference: TEXT NOT NULL
+        +category: TEXT NOT NULL
+        +topic_id: INT FK topics.id
+        %% category: Altes Testament | Propheten
+        %% Neues Testament | Evangelien
+    }
+}
+
+%% ═══════════════════════════════════════════════════════════════
+%%  TESTS
+%% ═══════════════════════════════════════════════════════════════
+
+namespace Tests {
+    class test_auth_py {
+        <<pytest>>
+        +client: Fixture~TestClient~
+        +test_login_success()
+        +test_login_wrong_password()
+        +test_search_without_cookie_returns_401()
+        +test_search_with_cookie_returns_200()
+    }
+
+    class test_models_py {
+        <<pytest>>
+        +db_session: Fixture~InMemorySQLite~
+        +test_create_topic()
+        +test_create_bible_reference()
+        +test_topic_references_relationship()
+        +test_topic_unique_constraint()
+    }
+
+    class test_parser_py {
+        <<pytest>>
+        +db_session: Fixture~InMemorySQLite~
+        +test_parse_html_returns_list()
+        +test_parse_html_fields_not_empty()
+        +test_parse_html_empty_html()
+        +test_save_to_db_creates_bible_reference()
+        +test_save_to_db_skips_duplicate_topic()
+        +test_parse_html_extracts_bible_references()
+        +test_parse_html_dedupes_within_file()
+        +test_parse_html_skips_topic_only_paragraphs()
+    }
+
+    class test_search_py {
+        <<pytest>>
+        +client: Fixture~TestClient+Auth~
+        -_insert_test_data() void
+        +test_search_existing_topic()
+        +test_search_nonexistent_topic()
+        +test_search_case_insensitive()
+        +test_search_partial_match()
+    }
+}
+
+%% ═══════════════════════════════════════════════════════════════
+%%  BEZIEHUNGEN · Frontend intern
+%% ═══════════════════════════════════════════════════════════════
+
+index_html ..> login_html : meta-refresh Weiterleitung
+login_html ..> search_html : JS redirect nach Login-Erfolg
+search_html ..> login_html : goLogin() bei 401
+
+%% ═══════════════════════════════════════════════════════════════
+%%  BEZIEHUNGEN · Frontend → Backend (REST)
+%% ═══════════════════════════════════════════════════════════════
+
+login_html ..> router_auth_py : POST /login JSON-Body
+search_html ..> router_search_py : GET /search?q= · Cookie session
+
+%% ═══════════════════════════════════════════════════════════════
+%%  BEZIEHUNGEN · Backend intern
+%% ═══════════════════════════════════════════════════════════════
+
+main_py --> router_auth_py : include_router
+main_py --> router_search_py : include_router + Depends(require_auth)
+main_py --> database_py : create_all() beim Start
+
+router_auth_py --> database_py : lädt APP_PASSWORD via dotenv
+router_search_py --> database_py : get_session()
+router_search_py --> models_py : Topic · BibleReference Queries
+
+database_py --> models_py : ORM-Schema · Base
+
+%% ═══════════════════════════════════════════════════════════════
+%%  BEZIEHUNGEN · Parser → DB
+%% ═══════════════════════════════════════════════════════════════
+
+parse_html_py --> database_py : get_session() · create_all()
+parse_html_py --> models_py : Topic · BibleReference erstellen
+
+%% ═══════════════════════════════════════════════════════════════
+%%  BEZIEHUNGEN · ORM → Tabellen
+%% ═══════════════════════════════════════════════════════════════
+
+models_py --> topics : ORM-Mapping
+models_py --> bible_references : ORM-Mapping
+topics "1" --> "n" bible_references : cascade delete-orphan
+
+%% ═══════════════════════════════════════════════════════════════
+%%  BEZIEHUNGEN · Tests
+%% ═══════════════════════════════════════════════════════════════
+
+test_auth_py ..> router_auth_py : testet POST /login
+test_auth_py ..> router_search_py : testet GET /search Auth
+test_models_py ..> models_py : testet ORM-Modelle
+test_parser_py ..> parse_html_py : testet parse_html · save_to_db
+test_search_py ..> router_search_py : testet GET /search Logik
+test_search_py ..> models_py : fügt Testdaten ein
 
 ```
 
